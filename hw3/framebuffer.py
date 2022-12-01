@@ -30,7 +30,7 @@ class FrameBuffer(Wrapper):
         """plays breakout for 1 step, returns frame buffer"""
         new_img, reward, done, info, _ = self.env.step(action)
         self.update_buffer(new_img)
-        return self.framebuffer, reward, done, info
+        return self.framebuffer, reward, done, info, {}
 
     def update_buffer(self, img):
         if self.dim_order == 'tensorflow':
