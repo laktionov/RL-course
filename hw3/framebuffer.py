@@ -20,10 +20,10 @@ class FrameBuffer(Wrapper):
         self.observation_space = Box(0.0, 1.0, obs_shape)
         self.framebuffer = np.zeros(obs_shape, 'float32')
 
-    def reset(self):
+    def reset(self, **kwargs):
         """resets breakout, returns initial frames"""
         self.framebuffer = np.zeros_like(self.framebuffer)
-        self.update_buffer(self.env.reset()[0])
+        self.update_buffer(self.env.reset(**kwargs)[0])
         return self.framebuffer, {}
 
     def step(self, action):
