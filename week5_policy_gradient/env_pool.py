@@ -25,7 +25,7 @@ class EnvPool(object):
         self.envs = [self.make_env() for _ in range(n_parallel_games)]
 
         # Initial observations.
-        self.prev_observations = [env.reset() for env in self.envs]
+        self.prev_observations = [env.reset()[0] for env in self.envs]
 
         # Agent memory variables (if you use recurrent networks).
         self.prev_memory_states = agent.get_initial_state(n_parallel_games)
@@ -46,7 +46,7 @@ class EnvPool(object):
 
         def env_step(i, action):
             if not self.just_ended[i]:
-                new_observation, cur_reward, is_done, info = \
+                new_observation, cur_reward, is_done, truncated, info = \
                     self.envs[i].step(action)
                 if is_done:
                     # Game ends now, will finalize on next tick.
@@ -54,11 +54,11 @@ class EnvPool(object):
 
                 # note: is_alive=True in any case because environment is still
                 # alive (last tick alive) in our notation.
-                return new_observation, cur_reward, True, info
+                return new_observation, cur_reward, True, truncated, info
             else:
                 # Reset environment, get new observation to be used on next
                 # tick.
-                new_observation = self.envs[i].reset()
+                new_observation = self.envs[i].reset()[0]
 
                 # Reset memory for new episode.
                 initial_memory_state = self.agent.get_initial_state(
@@ -71,7 +71,7 @@ class EnvPool(object):
 
                 self.just_ended[i] = False
 
-                return new_observation, 0, False, {'end': True}
+                return new_observation, 0, False, False, {'end': True}
 
         history_log = []
 
@@ -80,7 +80,7 @@ class EnvPool(object):
                 self.prev_memory_states, self.prev_observations)
             actions = self.agent.sample_actions(readout)
 
-            new_observations, cur_rewards, is_alive, infos = zip(
+            new_observations, cur_rewards, is_alive, _, infos = zip(
                 *map(env_step, range(len(self.envs)), actions))
 
             # Append data tuple for this tick.

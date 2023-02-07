@@ -1,7 +1,7 @@
 """Auxilary files for those who wanted to solve breakout with CEM or policy gradient"""
 import numpy as np
-from gym.core import Wrapper
-from gym.spaces.box import Box
+from gymnasium import Wrapper
+from gymnasium.spaces import Box
 from skimage.transform import resize
 
 
@@ -9,7 +9,7 @@ class PreprocessAtari(Wrapper):
     def __init__(self, env, height=42, width=42, color=False,
                  crop=lambda img: img, n_frames=4, dim_order='theano'):
         """A gym wrapper that reshapes, crops and scales image into the desired shapes"""
-        super(PreprocessAtari, self).__init__(env)
+        super().__init__(env)
         assert dim_order in ('theano', 'tensorflow')
         self.img_size = (height, width)
         self.crop = crop
@@ -24,17 +24,17 @@ class PreprocessAtari(Wrapper):
         self.observation_space = Box(0.0, 1.0, obs_shape)
         self.framebuffer = np.zeros(obs_shape, 'float32')
 
-    def reset(self):
+    def reset(self, **kwargs):
         """resets breakout, returns initial frames"""
         self.framebuffer = np.zeros_like(self.framebuffer)
-        self.update_buffer(self.env.reset())
-        return self.framebuffer
+        self.update_buffer(self.env.reset(**kwargs)[0])
+        return self.framebuffer, {}
 
     def step(self, action):
         """plays breakout for 1 step, returns frame buffer"""
-        new_img, r, done, info = self.env.step(action)
+        new_img, r, done, truncated, info = self.env.step(action)
         self.update_buffer(new_img)
-        return self.framebuffer, r, done, info
+        return self.framebuffer, r, done, truncated, info
 
     ### image processing ###
 
