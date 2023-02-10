@@ -1,7 +1,8 @@
 # pylint: skip-file
 from multiprocessing import Process, Pipe
 
-from gym import Env, Wrapper, Space
+from gymnasium import Env, Wrapper
+from gymnasium.spaces import Space
 import numpy as np
 
 
@@ -22,8 +23,7 @@ class SpaceBatch(Space):
                                  .format(first_dtype, space.dtype))
 
         self.spaces = spaces
-        super(SpaceBatch, self).__init__(shape=self.spaces[0].shape,
-                                         dtype=self.spaces[0].dtype)
+        super().__init__(shape=self.spaces[0].shape, dtype=self.spaces[0].dtype)
 
     def sample(self):
         return np.stack([space.sample() for space in self.spaces])
@@ -71,19 +71,25 @@ class EnvBatch(Env):
 
     def step(self, actions):
         self._check_actions(actions)
-        obs, rews, resets, infos = [], [], [], []
+        observations, rewards, resets, truncated_list, infos = [], [], [], [], []
         for env, action in zip(self._envs, actions):
-            ob, rew, done, info = env.step(action)
+            obs, rew, done, truncated, info = env.step(action)
             if done:
-                ob = env.reset()
-            obs.append(ob)
-            rews.append(rew)
+                obs, info = env.reset()
+            observations.append(obs)
+            rewards.append(rew)
             resets.append(done)
+            truncated_list.append(truncated)
             infos.append(info)
-        return np.stack(obs), np.stack(rews), np.stack(resets), infos
+        return np.stack(observations), np.stack(rewards), np.stack(resets), np.stack(truncated), infos
 
-    def reset(self):
-        return np.stack([env.reset() for env in self.envs])
+    def reset(self, **kwargs):
+        observations, infos = [], []
+        for env in self.envs:
+            obs, info = env.reset(**kwargs)
+            observations.append(obs)
+            infos.append(info)
+        return np.stack(observations), infos
 
 
 class SingleEnvBatch(Wrapper, EnvBatch):
@@ -102,18 +108,20 @@ class SingleEnvBatch(Wrapper, EnvBatch):
 
     def step(self, actions):
         self._check_actions(actions)
-        ob, rew, done, info = self.env.step(actions[0])
+        obs, rew, done, truncated, info = self.env.step(actions[0])
         if done:
-            ob = self.env.reset()
+            obs, info = self.env.reset()
         return (
-            ob[None],
+            obs[None],
             np.expand_dims(rew, 0),
             np.expand_dims(done, 0),
+            np.expand_dims(truncated, 0)
             [info],
         )
 
-    def reset(self):
-        return self.env.reset()[None]
+    def reset(self, **kwargs):
+        obs, info = self.env.reset(**kwargs)
+        return obs[None], info
 
 
 def worker(parent_connection, worker_connection, make_env_function,
@@ -126,13 +134,13 @@ def worker(parent_connection, worker_connection, make_env_function,
     while True:
         cmd, action = worker_connection.recv()
         if cmd == "step":
-            ob, rew, done, info = env.step(action)
+            obs, rew, done, truncated, info = env.step(action)
             if done:
-                ob = env.reset()
-            worker_connection.send((ob, rew, done, info))
+                obs, info = env.reset()
+            worker_connection.send((obs, rew, done, truncated, info))
         elif cmd == "reset":
-            ob = env.reset()
-            worker_connection.send(ob)
+            obs, info = env.reset()
+            worker_connection.send((obs, info))
         elif cmd == "close":
             env.close()
             worker_connection.close()
@@ -187,13 +195,20 @@ class ParallelEnvBatch(EnvBatch):
         for conn, a in zip(self._parent_connections, actions):
             conn.send(("step", a))
         results = [conn.recv() for conn in self._parent_connections]
-        obs, rews, dones, infos = zip(*results)
-        return np.stack(obs), np.stack(rews), np.stack(dones), infos
+        obs, rews, dones, truncated_list, infos = zip(*results)
+        return np.stack(obs), np.stack(rews), np.stack(dones), np.stack(truncated_list), infos
 
-    def reset(self):
+    def reset(self, **kwargs):
         for conn in self._parent_connections:
             conn.send(("reset", None))
-        return np.stack([conn.recv() for conn in self._parent_connections])
+
+        observations, infos = [], []
+        for conn in self._parent_connections:
+            obs, info = conn.recv()
+            observations.append(obs)
+            infos.append(info)
+        
+        return np.stack(observations), infos
 
     def close(self):
         if self._closed:

@@ -13,7 +13,7 @@ class EnvRunner:
         self.nsteps = nsteps
         self.transforms = transforms or []
         self.step_var = step_var if step_var is not None else 0
-        self.latest_observation = self.env.reset()
+        self.latest_observation, _ = self.env.reset()
 
     @property
     def nenvs(self):
@@ -29,7 +29,7 @@ class EnvRunner:
 
     def reset(self):
         """ Resets env and runner states. """
-        self.latest_observation = self.env.reset()
+        self.latest_observation, _ = self.env.reset()
         self.policy.reset()
 
     def get_next(self):
@@ -38,6 +38,8 @@ class EnvRunner:
         observations = []
         rewards = []
         dones = []
+        truncated_list = []
+
         
         for i in range(self.nsteps):
             observations.append(self.latest_observation)
@@ -51,16 +53,17 @@ class EnvRunner:
             for key, val in act.items():
                 trajectory[key].append(val)
 
-            obs, rew, done, _ = self.env.step(trajectory["actions"][-1])
+            obs, rew, done, truncated, _ = self.env.step(trajectory["actions"][-1])
             self.latest_observation = obs
             rewards.append(rew)
             dones.append(done)
+            truncated_list.append(truncated)
             self.step_var += self.nenvs or 1
 
             # Only reset if the env is not batched. Batched envs should
             # auto-reset.
             if not self.nenvs and np.all(done):
-                self.latest_observation = self.env.reset()
+                self.latest_observation, _ = self.env.reset()
 
         trajectory.update(
             observations=observations,

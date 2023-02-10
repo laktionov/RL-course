@@ -4,44 +4,45 @@ from collections import deque
 import cv2
 import numpy as np
 
-import gym
-import gym.spaces as spaces
-from gym.envs import atari
-from gym.wrappers.record_video import RecordVideo
+import gymnasium
+from gymnasium import Wrapper, RewardWrapper, ObservationWrapper
+from gymnasium.spaces import Box
+from gymnasium.wrappers import RecordVideo
+from shimmy.atari_env import AtariEnv
 from tensorboardX import SummaryWriter
 
 from env_batch import ParallelEnvBatch
 cv2.ocl.setUseOpenCL(False)
 
 
-class EpisodicLife(gym.Wrapper):
+class EpisodicLife(Wrapper):
     """ Sets done flag to true when agent dies. """
 
     def __init__(self, env):
-        super(EpisodicLife, self).__init__(env)
+        super().__init__(env)
         self.lives = 0
         self.real_done = True
 
     def step(self, action):
-        obs, rew, done, info = self.env.step(action)
+        obs, reward, done, truncated, info = self.env.step(action)
         self.real_done = done
         info["real_done"] = done
         lives = self.env.unwrapped.ale.lives()
         if 0 < lives < self.lives:
             done = True
         self.lives = lives
-        return obs, rew, done, info
+        return obs, reward, done, truncated, info
 
     def reset(self, **kwargs):
         if self.real_done:
-            obs = self.env.reset(**kwargs)
+            obs, info = self.env.reset(**kwargs)
         else:
-            obs, _, _, _ = self.env.step(0)
+            obs, _, _, _, info = self.env.step(0)
         self.lives = self.env.unwrapped.ale.lives()
-        return obs
+        return obs, info
 
 
-class FireReset(gym.Wrapper):
+class FireReset(Wrapper):
     """ Makes fire action when reseting environment.
 
     Some environments are fixed until the agent makes the fire action,
@@ -49,7 +50,7 @@ class FireReset(gym.Wrapper):
     """
 
     def __init__(self, env):
-        super(FireReset, self).__init__(env)
+        super().__init__(env)
         action_meanings = env.unwrapped.get_action_meanings()
         if len(action_meanings) < 3:
             raise ValueError(
@@ -65,51 +66,51 @@ class FireReset(gym.Wrapper):
 
     def reset(self, **kwargs):
         self.env.reset(**kwargs)
-        obs, _, done, _ = self.env.step(1)
+        obs, _, done, _, _ = self.env.step(1)
         if done:
             self.env.reset(**kwargs)
-        obs, _, done, _ = self.env.step(2)
+        obs, _, done, _, _ = self.env.step(2)
         if done:
             self.env.reset(**kwargs)
-        return obs
+        return obs, {}
 
 
-class StartWithRandomActions(gym.Wrapper):
+class StartWithRandomActions(Wrapper):
     """ Makes random number of random actions at the beginning of each
     episode. """
 
     def __init__(self, env, max_random_actions=30):
-        super(StartWithRandomActions, self).__init__(env)
+        super().__init__(env)
         self.max_random_actions = max_random_actions
         self.real_done = True
 
     def step(self, action):
-        obs, rew, done, info = self.env.step(action)
+        obs, reward, done, truncated, info = self.env.step(action)
         self.real_done = info.get("real_done", True)
-        return obs, rew, done, info
+        return obs, reward, done, truncated, info
 
     def reset(self, **kwargs):
-        obs = self.env.reset()
+        obs, info = self.env.reset(**kwargs)
         if self.real_done:
             num_random_actions = np.random.randint(self.max_random_actions + 1)
             for _ in range(num_random_actions):
-                obs, _, _, _ = self.env.step(self.env.action_space.sample())
+                obs, _, _, _, info = self.env.step(self.env.action_space.sample())
             self.real_done = False
-        return obs
+        return obs, info
 
 
-class ImagePreprocessing(gym.ObservationWrapper):
+class ImagePreprocessing(ObservationWrapper):
     """ Preprocesses image-observations by possibly grayscaling and resizing. """
 
     def __init__(self, env, width=84, height=84, grayscale=True):
-        super(ImagePreprocessing, self).__init__(env)
+        super().__init__(env)
         self.width = width
         self.height = height
         self.grayscale = grayscale
         ospace = self.env.observation_space
         low, high, dtype = ospace.low.min(), ospace.high.max(), ospace.dtype
         if self.grayscale:
-            self.observation_space = spaces.Box(
+            self.observation_space = Box(
                 low=low,
                 high=high,
                 shape=(width, height),
@@ -117,7 +118,7 @@ class ImagePreprocessing(gym.ObservationWrapper):
             )
         else:
             obs_shape = (width, height) + self.observation_space.shape[2:]
-            self.observation_space = spaces.Box(low=low, high=high,
+            self.observation_space = Box(low=low, high=high,
                                                 shape=obs_shape, dtype=dtype)
 
     def observation(self, observation):
@@ -129,15 +130,15 @@ class ImagePreprocessing(gym.ObservationWrapper):
         return observation
 
 
-class MaxBetweenFrames(gym.ObservationWrapper):
+class MaxBetweenFrames(ObservationWrapper):
     """ Takes maximum between two subsequent frames. """
 
     def __init__(self, env):
-        if (isinstance(env.unwrapped, atari.AtariEnv) and
+        if (isinstance(env.unwrapped, AtariEnv) and
                 "NoFrameskip" not in env.spec.id):
             raise ValueError(
                 "MaxBetweenFrames requires NoFrameskip in atari env id")
-        super(MaxBetweenFrames, self).__init__(env)
+        super().__init__(env)
         self.last_obs = None
 
     def observation(self, observation):
@@ -146,15 +147,15 @@ class MaxBetweenFrames(gym.ObservationWrapper):
         return obs
 
     def reset(self, **kwargs):
-        self.last_obs = self.env.reset()
-        return self.last_obs
+        self.last_obs, info = self.env.reset(**kwargs)
+        return self.last_obs, info
 
 
-class QueueFrames(gym.ObservationWrapper):
+class QueueFrames(ObservationWrapper):
     """ Queues specified number of frames together along new dimension. """
 
     def __init__(self, env, nframes, concat=False):
-        super(QueueFrames, self).__init__(env)
+        super().__init__(env)
         self.obs_queue = deque([], maxlen=nframes)
         self.concat = concat
         ospace = self.observation_space
@@ -162,7 +163,7 @@ class QueueFrames(gym.ObservationWrapper):
             oshape = ospace.shape[:-1] + (ospace.shape[-1] * nframes,)
         else:
             oshape = ospace.shape + (nframes,)
-        self.observation_space = spaces.Box(
+        self.observation_space = Box(
             ospace.low.min(), ospace.high.max(), oshape, ospace.dtype)
 
     def observation(self, observation):
@@ -171,19 +172,19 @@ class QueueFrames(gym.ObservationWrapper):
                 else np.dstack(self.obs_queue))
 
     def reset(self, **kwargs):
-        obs = self.env.reset()
+        obs, info = self.env.reset(**kwargs)
         for _ in range(self.obs_queue.maxlen - 1):
             self.obs_queue.append(obs)
-        return self.observation(obs)
+        return self.observation(obs), info
 
 
-class SkipFrames(gym.Wrapper):
+class SkipFrames(Wrapper):
     """ Performs the same action for several steps and returns the final result.
     """
 
     def __init__(self, env, nskip=4):
-        super(SkipFrames, self).__init__(env)
-        if (isinstance(env.unwrapped, atari.AtariEnv) and
+        super().__init__(env)
+        if (isinstance(env.unwrapped, AtariEnv) and
                 "NoFrameskip" not in env.spec.id):
             raise ValueError("SkipFrames requires NoFrameskip in atari env id")
         self.nskip = nskip
@@ -191,39 +192,39 @@ class SkipFrames(gym.Wrapper):
     def step(self, action):
         total_reward = 0.0
         for _ in range(self.nskip):
-            obs, rew, done, info = self.env.step(action)
-            total_reward += rew
+            obs, reward, done, truncated, info = self.env.step(action)
+            total_reward += reward
             if done:
                 break
-        return obs, total_reward, done, info
+        return obs, total_reward, done, truncated, info
 
     def reset(self, **kwargs):
         return self.env.reset(**kwargs)
 
 
-class ClipReward(gym.RewardWrapper):
+class ClipReward(RewardWrapper):
     """ Modifes reward to be in {-1, 0, 1} by taking sign of it. """
 
     def reward(self, reward):
         return np.sign(reward)
     
-class ImageToPyTorch(gym.ObservationWrapper):
+class ImageToPyTorch(ObservationWrapper):
     """
     Image shape to num_channels x weight x height and normalization
     """
     def __init__(self, env):
-        super(ImageToPyTorch, self).__init__(env)
+        super().__init__(env)
         old_shape = self.observation_space.shape
-        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(old_shape[-1], old_shape[1], old_shape[0]), dtype=np.float32)
+        self.observation_space = Box(low=0.0, high=1.0, shape=(old_shape[-1], old_shape[1], old_shape[0]), dtype=np.float32)
 
     def observation(self, observation):
         return np.swapaxes(observation, 2, 0).astype(np.float32) / 255.0
 
-class TensorboardSummaries(gym.Wrapper):
+class TensorboardSummaries(Wrapper):
     """ Writes env summaries."""
 
     def __init__(self, env, prefix=None, running_mean_size=100, step_var=None):
-        super(TensorboardSummaries, self).__init__(env)
+        super().__init__(env)
         self.episode_counter = 0
         self.prefix = prefix or self.env.spec.id
         self.writer = SummaryWriter(f"logs/{self.prefix}")
@@ -272,12 +273,13 @@ class TensorboardSummaries(gym.Wrapper):
         self.had_ended_episodes.fill(False)
 
     def step(self, action):
-        obs, rew, done, info = self.env.step(action)
-        self.rewards += rew
+        obs, reward, done, truncated, info = self.env.step(action)
+        self.rewards += reward
         self.episode_lengths[~self.had_ended_episodes] += 1
 
         info_collection = [info] if isinstance(info, dict) else info
         done_collection = [done] if isinstance(done, bool) else done
+        truncated_collection = [truncated] if isinstance(truncated, bool) else truncated
         done_indices = [i for i, info in enumerate(info_collection)
                         if info.get("real_done", done_collection[i])]
         for i in done_indices:
@@ -289,7 +291,7 @@ class TensorboardSummaries(gym.Wrapper):
         self.step_var += self.nenvs
         if self.should_write_summaries():
             self.add_summaries()
-        return obs, rew, done, info
+        return obs, reward, done, truncated, info
 
     def reset(self, **kwargs):
         self.rewards.fill(0)
@@ -330,7 +332,7 @@ def nature_dqn_env(env_id, nenvs=None, seed=None, summaries=True, monitor=False,
             env = ClipReward(env)
         return env
 
-    env = gym.make(env_id)
+    env = gymnasium.make(env_id)
     env.seed(seed)
     
     if summaries:
